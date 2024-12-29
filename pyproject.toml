@@ -1,0 +1,44 @@
+[project]
+name = "wunderbar"
+version = "0.0.0"
+authors = [
+    { name="Matthew Farrugia-Roberts", email="matthew@far.in.net" },
+]
+description = "Python parser for the `.wandb` binary structured log format."
+readme = "README.md"
+license = {text = "MIT License"}
+classifiers = [
+    "Private :: Do Not Upload",
+    "Development Status :: 2 - Pre-Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "wandb",
+    "protobuf",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy",
+  "types-protobuf",
+]
+
+[project.scripts]
+wunderbar = "wunderbar:main"
+
+[project.urls]
+Homepage = "https://github.com/matomatical/wunderbar"
+Issues = "https://github.com/matomatical/wunderbar/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -170,9 +170,9 @@ Verification and testing
 * [x] Type-check with `mypy`
 * [x] Test parsing on a large log without errors
   * [x] Fix off-by-one error causing the problem
-* [ ] Test error recovery on a large log with a mysterious padding error
+* [x] Test error recovery on a large log with a mysterious padding error
   * [x] Trace the cause to [a historical bug in wandb core](https://github.com/wandb/wandb/pull/8088)
-  * [ ] Make the parser resilient to this particular bug...
+  * [x] Option to make the parser handle this particular variant
 
 Documentation
 

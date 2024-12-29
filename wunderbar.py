@@ -137,8 +137,12 @@ CRC_START = {
 
 def parse_file(
     file: typing.BinaryIO,
+    include_header_in_first_block: bool = True,
 ) -> collections.abc.Generator[LogRecord | Corruption]:
-    blocks = parse_file_to_blocks(file)
+    blocks = parse_file_to_blocks(
+        file=file,
+        include_header_in_first_block=include_header_in_first_block,
+    )
     chunks = parse_blocks_to_chunks(blocks)
     raw_records = parse_chunks_to_raw_records(chunks)
     pb_records = parse_raw_records_to_protobuf_records(raw_records)
@@ -148,16 +152,24 @@ def parse_file(
 
 def parse_filepath(
     path: str | pathlib.Path,
+    include_header_in_first_block: bool = True,
 ) -> collections.abc.Generator[LogRecord | Corruption]:
     with open(path, mode='rb', buffering=BLOCK_SIZE) as file:
-        yield from parse_file(file=file)
+        yield from parse_file(
+            file=file,
+            include_header_in_first_block=include_header_in_first_block,
+        )
 
 
 def parse_data(
     data: bytes,
+    include_header_in_first_block: bool = True,
 ) -> collections.abc.Generator[LogRecord | Corruption]:
     file = io.BytesIO(initial_bytes=data)
-    yield from parse_file(file=file)
+    yield from parse_file(
+        file=file,
+        include_header_in_first_block=include_header_in_first_block,
+    )
 
 
 def purify(
@@ -179,6 +191,7 @@ def purify(
 
 def parse_file_to_blocks(
     file: typing.BinaryIO,
+    include_header_in_first_block: bool = True,
 ) -> collections.abc.Generator[Block]:
     # reliable buffered read regardless of type of file we are given
     def _readn(file: typing.BinaryIO, n: int):
@@ -195,25 +208,29 @@ def parse_file_to_blocks(
     file_header = _readn(file, n=HEADER_LEN)
     if len(file_header) != HEADER_LEN:
         raise InvalidHeaderException("File too short.")
-    magic1, magic2, version = struct.unpack("<4sHB", file_header)
-    if magic1 != b":W&B":
-        raise InvalidHeaderException(f"Magic char[4]: expected b':W&B', got {magic1}")
-    if magic2 != 0xBEE1:
-        raise InvalidHeaderException(f"Magic short: expected bee1, got {magic2:x}")
-    if version != 0b00000000:
-        raise InvalidHeaderException(f"Version byte: expected 00, got {version:02x}")
-    
-    # first block (minus header)
-    data = _readn(file, n=BLOCK_SIZE - HEADER_LEN) # IS THIS RIGHT!?
-    yield Block(
-        data=data,
-        number=0,
-        index=HEADER_LEN,
-    )
-    
-    # remaining blocks (loop until read returns 0 bytes)
+    char4, short, version = struct.unpack("<4sHB", file_header)
+    if char4 != b":W&B":
+        raise InvalidHeaderException(f"Magic chr[4]: want b':W&B', got {char4}")
+    if short != 0xbee1:
+        raise InvalidHeaderException(f"Magic short: want bee1, got {short:04x}")
+    if version != 0x00:
+        raise InvalidHeaderException(f"Version byte: want 00, got {version:02x}")
+
+    # prepare to read a sequence of blocks
     number = 1
-    index = HEADER_LEN + len(data)
+    index = HEADER_LEN
+    # since legacy backend, first block shortened to account for header
+    if include_header_in_first_block:
+        data = _readn(file, n=BLOCK_SIZE - HEADER_LEN)
+        if not data: return # eof
+        yield Block(
+            data=data,
+            number=number,
+            index=index,
+        )
+        number += 1
+        index += len(data)
+    # remaining blocks have uniform size (loop until read returns 0 bytes)
     while data := _readn(file, n=BLOCK_SIZE):
         yield Block(
             data=data,
@@ -401,7 +418,7 @@ def parse_protobuf_records_to_log_records(
                 # check the event type
                 record_type = pb_record.record.WhichOneof("record_type")
                 if record_type is None:
-                    # TODO: handle as corruption
+                    # TODO: handle as corruption?
                     assert False, "invalid wandb record, missing type"
 
                 # streamline key/value_json item lists (replace with dicts)
@@ -413,7 +430,7 @@ def parse_protobuf_records_to_log_records(
                                 key = item['key']
                             else: # 'nested_key' in item:
                                 key = '/'.join(item['nested_key'])
-                            # TODO: handle as corruption
+                            # TODO: handle as corruption?
                             assert key not in mapping, "duplicate item"
                             value = json.loads(item['value_json'])
                             mapping[key] = value
@@ -446,11 +463,16 @@ def main():
     path = sys.argv[1]
 
     # entry point
-    print(f"loading wandb database from {path}...")
-    for record_or_corruption in parse_filepath(path=path):
+    print(f"loading wandb log from {path}...")
+    for record_or_corruption in parse_filepath(path):
         match record_or_corruption:
             case LogRecord() as record:
-                print("Record:", record.type, record.number, record.data)
+                print(
+                    "Record:",
+                    record.type,
+                    record.number,
+                    f"keys: {','.join(record.data.keys())}",
+                )
             case Corruption() as corruption:
                 print(
                     "Corruption:",

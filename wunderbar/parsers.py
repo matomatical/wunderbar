@@ -2,12 +2,10 @@ import collections
 import dataclasses
 import enum
 import io
-import itertools
 import json
 import os
 import pathlib
 import struct
-import sys
 import typing
 import zlib
 
@@ -122,17 +120,15 @@ FILE_HEADER = struct.pack(
 
 
 CRC_START = {
-    Chunk.Type.FULL:     zlib.crc32(bytes(chr(1), "iso8859-1")) & 0xFFFFFFFF,
-    Chunk.Type.FIRST:    zlib.crc32(bytes(chr(2), "iso8859-1")) & 0xFFFFFFFF,
-    Chunk.Type.MIDDLE:   zlib.crc32(bytes(chr(3), "iso8859-1")) & 0xFFFFFFFF,
-    Chunk.Type.LAST:     zlib.crc32(bytes(chr(4), "iso8859-1")) & 0xFFFFFFFF,
+    Chunk.Type.FULL:    zlib.crc32(bytes(chr(1), "iso8859-1")) & 0xFFFFFFFF,
+    Chunk.Type.FIRST:   zlib.crc32(bytes(chr(2), "iso8859-1")) & 0xFFFFFFFF,
+    Chunk.Type.MIDDLE:  zlib.crc32(bytes(chr(3), "iso8859-1")) & 0xFFFFFFFF,
+    Chunk.Type.LAST:    zlib.crc32(bytes(chr(4), "iso8859-1")) & 0xFFFFFFFF,
 }
 
 
 # # # 
-# COMPOSED PARSERS
-# 
-# These are where you can enter the file
+# END-TO-END PARSERS
 
 
 def parse_file(
@@ -184,9 +180,7 @@ def purify(
 
 
 # # # 
-# INTERNAL LAYER PARSERS
-# 
-# Each works with one layer of abstraction at a time, they are later composed.
+# LAYER PARSERS
 
 
 def parse_file_to_blocks(
@@ -448,38 +442,3 @@ def parse_protobuf_records_to_log_records(
             
             case Corruption() as corruption:
                 yield corruption
-
-
-# # # 
-# DEMO SCRIPT
-
-
-def main():
-    # parse command line arguments
-    import sys
-    if len(sys.argv) != 2:
-        print("usage: parse.py path/to/run.wandb", file=sys.stderr)
-        sys.exit(1)
-    path = sys.argv[1]
-
-    # entry point
-    print(f"loading wandb log from {path}...")
-    for record_or_corruption in parse_filepath(path):
-        match record_or_corruption:
-            case LogRecord() as record:
-                print(
-                    "Record:",
-                    record.type,
-                    record.number,
-                    f"keys: {','.join(record.data.keys())}",
-                )
-            case Corruption() as corruption:
-                print(
-                    "Corruption:",
-                    corruption.note,
-                    f"({len(corruption.data)} bytes)",
-                )
-
-
-if __name__ == "__main__":
-    main()

@@ -132,7 +132,7 @@ CRC_START = {
 
 
 def parse_file(
-    file: typing.BinaryIO,
+    file: typing.IO[bytes],
     include_header_in_first_block: bool = True,
 ) -> collections.abc.Generator[LogRecord | Corruption]:
     blocks = parse_file_to_blocks(
@@ -184,11 +184,11 @@ def purify(
 
 
 def parse_file_to_blocks(
-    file: typing.BinaryIO,
+    file: typing.IO[bytes],
     include_header_in_first_block: bool = True,
 ) -> collections.abc.Generator[Block]:
     # reliable buffered read regardless of type of file we are given
-    def _readn(file: typing.BinaryIO, n: int):
+    def _readn(file: typing.IO[bytes], n: int):
         data = bytearray(n)
         i = 0
         while i < n:

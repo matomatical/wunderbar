@@ -3,7 +3,7 @@ import json
 import wunderbar
 
 
-def main():
+def main() -> None:
     # parse command line arguments
     argparser = argparse.ArgumentParser(
         description="Robust .wandb log parser.",
@@ -21,6 +21,12 @@ def main():
         help='Print each record in its entirety.',
     )
     argparser.add_argument(
+        '-P',
+        '--purify',
+        action='store_true',
+        help='Skip corruption.',
+    )
+    argparser.add_argument(
         '-H',
         '--exclude-header-from-first-block',
         action='store_true',
@@ -34,9 +40,9 @@ def main():
 
     # entry point
     print(f"loading wandb log from {args.path}...")
-    records_or_corruption = wunderbar.parse_filepath(
+    records_or_corruption = wunderbar.parse_filepath_with_corruption(
         path=args.path,
-        include_header_in_first_block=not args.exclude_header_from_first_block,
+        exclude_header_from_first_block=args.exclude_header_from_first_block,
     )
     for record_or_corruption in records_or_corruption:
         match record_or_corruption:
@@ -60,15 +66,18 @@ def main():
                     print()
 
             case wunderbar.Corruption() as c:
+                if args.purify:
+                    continue
                 if not args.peek:
-                    print(f"Corruption: {c.note}")
+                    print(f"Corruption: {type(c).__name__}")
                 else:
-                    print(f"Corruption: {c.note} ({len(c.data)} bytes)")
-                if args.verbose:
-                    bgrid = [c.data[i:i+16] for i in range(0, len(c.data), 16)]
-                    for i in range(0, len(c.data), 16):
-                        row = c.data[i:i+16]
-                        print(f"{i:>8}:", *[f"{b:02x}" for b in row], sep="  ")
+                    print(f"Corruption: {type(c).__name__}: {c.note}")
+                # TODO: 
+                # if args.verbose:
+                #     bgrid = [c.data[i:i+16] for i in range(0, len(c.data), 16)]
+                #     for i in range(0, len(c.data), 16):
+                #         row = c.data[i:i+16]
+                #         print(f"{i:>8}:", *[f"{b:02x}" for b in row], sep="  ")
 
 
 if __name__ == "__main__":

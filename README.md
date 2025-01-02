@@ -41,8 +41,7 @@ import wunderbar
 
 PATH = 'path/to/example-run.wandb'
 
-records_or_corruption = wunderbar.parse_filepath(path=PATH)
-records = wunderbar.purify(records_or_corruption)
+records = wunderbar.parse_filepath(path=PATH)
 for record in records:
     print(f"Record {record.number} ({record.type})")
     if record.type == "history": # a call to wandb.log(step, data)
@@ -68,22 +67,27 @@ Types:
   * `"stats"`: A sample of system statistics.
   * `"output_raw"`: Printed to `stdout`.
   * ... Plus several more.
-* `Corruption(data: bytes, note: str)`: Some un-parse-able binary content, with
-  a brief justification of the problem (e.g. checksum failed).
+* `Corruption(note: str)`: Some un-parse-able binary content, with a brief
+  justification of the problem (e.g. checksum failed).
+  * TODO: Several sub-types of corruption.
 
 Commonly-used functions:
 
 * Parsing functions:
-  * `parse_filepath(path: str | pathlib.Path) -> Generator[LogRecord |
-    Corruption]` parses a file at a given path.
-  * `parse_file(file: typing.BinaryIO) -> Generator[LogRecord | Corruption]`
-    parses an already-open file-like object.
-  * `parse_data(data: bytes) -> Generator[LogRecord | Corruption]` parses data
-    already in memory.
-* `purify(g: Generator[LogRecord | Corruption]) -> Generator[LogRecord]`
-  filters out corruption.
+  * `parse_filepath(path: str | pathlib.Path) -> Generator[LogRecord]` parses a
+    file at a given path.
+  * `parse_file(file: typing.BinaryIO) -> Generator[LogRecord]` parses an
+    already-open file-like object.
+  * `parse_data(data: bytes) -> Generator[LogRecord]` parses data already in
+    memory.
+* Same three functions with suffix `_with_corruption` with type `->
+  Genenerator[LogRecord | Corruption]`
+  * `purify(g: Generator[LogRecord | Corruption]) -> Generator[LogRecord]`
+    filters out corruption.
 
 See code for full details.
+
+TODO: document code.
 
 About the .wandb file format
 ----------------------------
@@ -148,11 +152,13 @@ Enhanced functionality
 * [x] Support streaming (helpful if database is not already in memory)
 * [x] Robust to incomplete reads from unbuffered file-like objects
 * [x] Dedicated types for blocks, chunks, various kinds of records
-* [x] Tracking block/chunk/record numbers and indices
-* [ ] Dedicated types for different kinds of corruption
-* [ ] Structured tracking of corrupt chunk/block/record errors
-* [ ] Improved API (filter corruption by default; parsers for different
-      chunking modes, etc.)
+* [x] Tracking block/chunk/record context (numbers, indices, components)
+* [x] Dedicated types for different kinds of corruption
+* [x] Tracking of corrupt chunk/block/record context (indices, components)
+* [ ] Size and data properties for different types of data and corruption?
+* [x] API improvement: Option to use variant block boundaries
+* [x] API improvement: Main functions filter corruption by default
+* [ ] API improvement: Option to raise an exception upon seeing corruption
 
 Error tracking and recovery
 
@@ -173,7 +179,7 @@ Verification and testing
 Documentation
 
 * [x] Brief README
-* [ ] Code documentations
+* [ ] Document code
 * [ ] Document format
 * [ ] Document format variations
 * [ ] API reference

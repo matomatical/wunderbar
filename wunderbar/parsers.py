@@ -22,7 +22,6 @@ import wandb.proto.wandb_internal_pb2 as wandb_protobuf
 @dataclasses.dataclass
 class Block:
     data: bytes
-    # aux
     number: int # position in sequence of blocks within file
     index: int  # data = file[file_index:file_index+len(data)]
 
@@ -36,7 +35,6 @@ class Chunk:
         LAST    = 4
     type: Type
     data: bytes
-    # aux
     block: Block    # block within which this chunk was found
     number: int     # position in sequence of chunks within block
     index: int      # data = block.data[index:index+len(data)]
@@ -45,7 +43,6 @@ class Chunk:
 @dataclasses.dataclass
 class RawRecord:
     data: bytes
-    # aux
     number: int     # position in sequence of valid records
     chunks: tuple[Chunk, ...] # chunks from which this record was assembled
 
@@ -82,17 +79,33 @@ class LogRecord:
     data: dict
     control: dict | None
     info: dict | None
-    # aux
     raw_record: RawRecord
 
 
 @dataclasses.dataclass
 class Corruption:
+    note: str       # text justification of the error
+
+
+@dataclasses.dataclass
+class BadChunk(Corruption):
     data: bytes
-    note: str
+    block: Block    # block within which this chunk was found
+    index: int      # data = block.data[index:]
 
 
-class InvalidHeaderException(Exception):
+@dataclasses.dataclass
+class IncompleteChunkSequence(Corruption):
+    chunks: tuple[Chunk, ...]
+
+
+@dataclasses.dataclass
+class RecordWithProtobufError(Corruption):
+    raw_record: RawRecord
+    protobuf_error: protobuf.message.DecodeError
+
+
+class InvalidFileHeaderException(Exception):
     """
     Invalid file header.
     """
@@ -128,44 +141,37 @@ CRC_START = {
 
 
 # # # 
-# END-TO-END PARSERS
+# END-TO-END PARSERS (CORRUPTION FILTERED OUT)
 
 
 def parse_file(
     file: typing.IO[bytes],
-    include_header_in_first_block: bool = True,
-) -> collections.abc.Generator[LogRecord | Corruption]:
-    blocks = parse_file_to_blocks(
+    exclude_header_from_first_block: bool = False,
+) -> collections.abc.Generator[LogRecord]:
+    yield from purify(parse_file_with_corruption(
         file=file,
-        include_header_in_first_block=include_header_in_first_block,
-    )
-    chunks = parse_blocks_to_chunks(blocks)
-    raw_records = parse_chunks_to_raw_records(chunks)
-    pb_records = parse_raw_records_to_protobuf_records(raw_records)
-    log_records = parse_protobuf_records_to_log_records(pb_records)
-    yield from log_records
+        exclude_header_from_first_block=exclude_header_from_first_block,
+    ))
 
 
 def parse_filepath(
     path: str | pathlib.Path,
-    include_header_in_first_block: bool = True,
-) -> collections.abc.Generator[LogRecord | Corruption]:
-    with open(path, mode='rb', buffering=BLOCK_SIZE) as file:
-        yield from parse_file(
-            file=file,
-            include_header_in_first_block=include_header_in_first_block,
-        )
+    exclude_header_from_first_block: bool = False,
+) -> collections.abc.Generator[LogRecord]:
+    yield from purify(parse_filepath_with_corruption(
+        path=path,
+        exclude_header_from_first_block=exclude_header_from_first_block,
+    ))
 
 
 def parse_data(
     data: bytes,
-    include_header_in_first_block: bool = True,
-) -> collections.abc.Generator[LogRecord | Corruption]:
-    file = io.BytesIO(initial_bytes=data)
-    yield from parse_file(
-        file=file,
-        include_header_in_first_block=include_header_in_first_block,
-    )
+    exclude_header_from_first_block: bool = False,
+) -> collections.abc.Generator[LogRecord]:
+    yield from purify(parse_data_with_corruption(
+        data=data,
+        exclude_header_from_first_block=exclude_header_from_first_block,
+    ))
 
 
 def purify(
@@ -180,12 +186,53 @@ def purify(
 
 
 # # # 
+# END-TO-END PARSERS (RETAINING CORRUPTION)
+
+
+def parse_file_with_corruption(
+    file: typing.IO[bytes],
+    exclude_header_from_first_block: bool = False,
+) -> collections.abc.Generator[LogRecord | Corruption]:
+    blocks = parse_file_to_blocks(
+        file=file,
+        exclude_header_from_first_block=exclude_header_from_first_block,
+    )
+    chunks = parse_blocks_to_chunks(blocks)
+    raw_records = parse_chunks_to_raw_records(chunks)
+    pb_records = parse_raw_records_to_protobuf_records(raw_records)
+    log_records = parse_protobuf_records_to_log_records(pb_records)
+    yield from log_records
+
+
+def parse_filepath_with_corruption(
+    path: str | pathlib.Path,
+    exclude_header_from_first_block: bool = False,
+) -> collections.abc.Generator[LogRecord | Corruption]:
+    with open(path, mode='rb', buffering=BLOCK_SIZE) as file:
+        yield from parse_file_with_corruption(
+            file=file,
+            exclude_header_from_first_block=exclude_header_from_first_block,
+        )
+
+
+def parse_data_with_corruption(
+    data: bytes,
+    exclude_header_from_first_block: bool = False,
+) -> collections.abc.Generator[LogRecord | Corruption]:
+    file = io.BytesIO(initial_bytes=data)
+    yield from parse_file_with_corruption(
+        file=file,
+        exclude_header_from_first_block=exclude_header_from_first_block,
+    )
+
+
+# # # 
 # LAYER PARSERS
 
 
 def parse_file_to_blocks(
     file: typing.IO[bytes],
-    include_header_in_first_block: bool = True,
+    exclude_header_from_first_block: bool = False,
 ) -> collections.abc.Generator[Block]:
     # reliable buffered read regardless of type of file we are given
     def _readn(file: typing.IO[bytes], n: int):
@@ -201,22 +248,23 @@ def parse_file_to_blocks(
     # read and check file header
     file_header = _readn(file, n=HEADER_LEN)
     if len(file_header) != HEADER_LEN:
-        raise InvalidHeaderException("File too short.")
+        raise InvalidFileHeaderException("File too short.")
     char4, short, version = struct.unpack("<4sHB", file_header)
     if char4 != b":W&B":
-        raise InvalidHeaderException(f"Magic chr[4]: want b':W&B', got {char4}")
+        raise InvalidFileHeaderException(f"Magic chr[4]: want b':W&B', got {char4}")
     if short != 0xbee1:
-        raise InvalidHeaderException(f"Magic short: want bee1, got {short:04x}")
+        raise InvalidFileHeaderException(f"Magic short: want 0xbee1, got 0x{short:04x}")
     if version != 0x00:
-        raise InvalidHeaderException(f"Version byte: want 00, got {version:02x}")
+        raise InvalidFileHeaderException(f"Version byte: want 0x00, got 0x{version:02x}")
 
     # prepare to read a sequence of blocks
     number = 1
     index = HEADER_LEN
-    # since legacy backend, first block shortened to account for header
-    if include_header_in_first_block:
+    # for compatibility with legacy backend, the format assumes the first block
+    # is shortened to account for file header---respect this:
+    if not exclude_header_from_first_block:
         data = _readn(file, n=BLOCK_SIZE - HEADER_LEN)
-        if not data: return # eof
+        if not data: return # eof immediately after header is possible
         yield Block(
             data=data,
             number=number,
@@ -242,35 +290,51 @@ def parse_blocks_to_chunks(
         number = 0
         index = 0
         while index <= len(block.data) - HEADER_LEN:
-            # read and validate header:
+            # slice header
             header = block.data[index:index+HEADER_LEN]
             checksum, data_len, chunk_type = struct.unpack("<IHB", header)
+            
+            # validate chunk type
             try:
                 chunk_type = Chunk.Type(chunk_type)
             except ValueError:
-                yield Corruption(
+                yield BadChunk(
+                    note=f"invalid type byte (want 0x01--0x04, got 0x{chunk_type:02x})",
                     data=block.data[index:],
-                    note="bad chunk (type); corrupt rest of block",
+                    block=block,
+                    index=index,
                 )
                 break
-            if index + HEADER_LEN + data_len > len(block.data):
-                yield Corruption(
-                    data=block.data[index:],
-                    note="bad chunk (len); corrupt rest of block",
-                )
-                break # skip to next block
             
-            # read and validate data:
+            # validate length
+            remainder_len = len(block.data) - index - HEADER_LEN
+            if data_len > remainder_len:
+                yield BadChunk(
+                    note=f"implausible length ({data_len} > {remainder_len} "
+                        "bytes left in block)",
+                    data=block.data[index:],
+                    block=block,
+                    index=index,
+                )
+                break
+            
+            # slice data (requires valid length)
             data = block.data[index+HEADER_LEN:index+HEADER_LEN+data_len]
-            data_crc32 = zlib.crc32(data, CRC_START[chunk_type]) & 0xFFFFFFFF
-            if checksum != data_crc32:
-                yield Corruption(
-                    data=block.data[index:],
-                    note="bad chunk (crc); corrupt rest of block",
-                )
-                break # skip to next block
             
-            # if we made it here, it's a valid chunk! advance within block
+            # compute data checksum (requires data and valid type)
+            data_crc32 = zlib.crc32(data, CRC_START[chunk_type]) & 0xFFFFFFFF
+
+            # check checksum (requires data and expected checksum)
+            if checksum != data_crc32:
+                yield BadChunk(
+                    note="failed checksum (could be due to data or header)",
+                    data=block.data[index:],
+                    block=block,
+                    index=index,
+                )
+                break
+            
+            # if we made it here, it's a valid chunk! advance within block!
             yield Chunk(
                 type=chunk_type,
                 data=data,
@@ -280,13 +344,17 @@ def parse_blocks_to_chunks(
             )
             number += 1
             index += HEADER_LEN + data_len
+
         else:
             # if we leave the loop naturally, check the padding
             if any(block.data[index:]):
-                yield Corruption(
+                yield BadChunk(
+                    note="nonzero chunk padding at end of block",
                     data=block.data[index:],
-                    note="bad chunk padding; corrupt rest of block",
+                    block=block,
+                    index=index,
                 )
+                # we were about to skip it anyway haha
 
 
 def parse_chunks_to_raw_records(
@@ -294,17 +362,26 @@ def parse_chunks_to_raw_records(
 ) -> collections.abc.Generator[RawRecord | Corruption]:
     number = 0
     record_in_progress: list[Chunk] = []
+    uninitialised_record_in_progress: list[Chunk] = []
+    # note: at most one of these stacks is ever non-empty at any given time
 
     for chunk_or_corrupt in chunks:
         match chunk_or_corrupt:
             case Chunk(type=Chunk.Type.FULL) as chunk:
                 if record_in_progress:
                     # error: interrupted record-in-progress
-                    yield Corruption(
-                        data=b''.join(c.data for c in record_in_progress),
+                    yield IncompleteChunkSequence(
                         note="multi-chunk record interrupted by FULL chunk",
+                        chunks=tuple(record_in_progress),
                     )
                     record_in_progress.clear()
+                elif uninitialised_record_in_progress:
+                    # end of error: interrupted incomplete record-in-progress
+                    yield IncompleteChunkSequence(
+                        note="uninitialised multi-chunk record",
+                        chunks=tuple(uninitialised_record_in_progress),
+                    )
+                    uninitialised_record_in_progress.clear()
                 # either way, this is a complete single-chunk record!
                 yield RawRecord(
                     data=chunk.data,
@@ -316,11 +393,18 @@ def parse_chunks_to_raw_records(
             case Chunk(type=Chunk.Type.FIRST) as chunk:
                 if record_in_progress:
                     # error: interrupted record-in-progress
-                    yield Corruption(
-                        data=b''.join(c.data for c in record_in_progress),
+                    yield IncompleteChunkSequence(
                         note="multi-chunk record interrupted by FIRST chunk",
+                        chunks=tuple(record_in_progress),
                     )
                     record_in_progress.clear()
+                elif uninitialised_record_in_progress:
+                    # end of error: interrupted incomplete record-in-progress
+                    yield IncompleteChunkSequence(
+                        note="uninitialised multi-chunk record",
+                        chunks=tuple(uninitialised_record_in_progress),
+                    )
+                    uninitialised_record_in_progress.clear()
                 # either way, this is the start of a new multi-chunk record
                 record_in_progress.append(chunk)
 
@@ -329,11 +413,8 @@ def parse_chunks_to_raw_records(
                     # continuation of a previously-started multi-part record
                     record_in_progress.append(chunk)
                 else:
-                    # error: attempt to continue non-existing multi-part record
-                    yield Corruption(
-                        data=chunk.data,
-                        note="MIDDLE chunk without corresponding FIRST chunk",
-                    )
+                    # continuation OR start of uninitialised multi-part record
+                    uninitialised_record_in_progress.append(chunk)
             
             case Chunk(type=Chunk.Type.LAST) as chunk:
                 if record_in_progress:
@@ -347,30 +428,47 @@ def parse_chunks_to_raw_records(
                     number += 1
                     record_in_progress.clear()
                 else:
-                    # error: attempt to continue non-existing multi-part record
-                    yield Corruption(
-                        data=chunk.data,
-                        note="LAST chunk without corresponding FIRST chunk",
+                    # continuation OR start of uninitialised multi-part record;
+                    uninitialised_record_in_progress.append(chunk)
+                    # but either way, it's a LAST chunk so it's the *end*...
+                    yield IncompleteChunkSequence(
+                        note="uninitialised multi-chunk record",
+                        chunks=tuple(uninitialised_record_in_progress),
                     )
+                    uninitialised_record_in_progress.clear()
 
             case Corruption() as corruption:
                 if record_in_progress:
                     # error: interrupted multi-part record
-                    yield Corruption(
-                        data=b''.join(c.data for c in record_in_progress),
-                        note="multi-chunk record interrupted by bad chunk",
+                    yield IncompleteChunkSequence(
+                        note="multi-chunk record interrupted by corrupt chunk",
+                        chunks=tuple(record_in_progress),
                     )
                     record_in_progress.clear()
-                # (either way, pass through the corruption itself)
+                elif uninitialised_record_in_progress:
+                    # end of error: interrupted incomplete record-in-progress
+                    yield IncompleteChunkSequence(
+                        note="uninitialised multi-chunk record",
+                        chunks=tuple(uninitialised_record_in_progress),
+                    )
+                    uninitialised_record_in_progress.clear()
+                # (either way, pass through the corruption itself...)
                 yield corruption
     
-    # another error case: a record remains in progress after final chunk!
+    # another error case: an initialised/uninitialised record remains in
+    # progress after final chunk has been processed!
     if record_in_progress:
-        yield Corruption(
-            data=b''.join(c.data for c in record_in_progress),
+        yield IncompleteChunkSequence(
             note="multi-chunk record interrupted by eof",
+            chunks=tuple(record_in_progress),
         )
         record_in_progress.clear()
+    elif uninitialised_record_in_progress:
+        yield IncompleteChunkSequence(
+            note="uninitialised multi-chunk record",
+            chunks=tuple(uninitialised_record_in_progress),
+        )
+        uninitialised_record_in_progress.clear()
 
 
 def parse_raw_records_to_protobuf_records(
@@ -379,6 +477,7 @@ def parse_raw_records_to_protobuf_records(
     for raw_record_or_corruption in raw_records:
         match raw_record_or_corruption:
             case RawRecord(data=data) as raw_record:
+                # deserialise with protobuf
                 pb_record = _ProtobufRecord()
                 try:
                     pb_record.ParseFromString(data)
@@ -386,13 +485,16 @@ def parse_raw_records_to_protobuf_records(
                         record=pb_record,
                         raw_record=raw_record,
                     )
-                except protobuf.message.DecodeError as e:
-                    yield Corruption(
-                        data=data,
+
+                # track protobuf deserialisation errors
+                except protobuf.message.DecodeError as decode_error:
+                    yield RecordWithProtobufError(
                         note="protobuf record failed deserialisation",
+                        raw_record=raw_record,
+                        protobuf_error=decode_error,
                     )
-                    # TODO: track e
             
+            # pass through existing corruption unchanged
             case Corruption() as corruption:
                 yield corruption
 
@@ -440,5 +542,6 @@ def parse_protobuf_records_to_log_records(
                     raw_record=pb_record.raw_record,
                 )
             
+            # pass up corruption
             case Corruption() as corruption:
                 yield corruption

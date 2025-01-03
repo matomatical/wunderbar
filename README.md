@@ -76,7 +76,7 @@ Commonly-used functions:
 * Parsing functions:
   * `parse_filepath(path: str | pathlib.Path) -> Generator[LogRecord]` parses a
     file at a given path.
-  * `parse_file(file: typing.BinaryIO) -> Generator[LogRecord]` parses an
+  * `parse_file(file: typing.IO[bytes]) -> Generator[LogRecord]` parses an
     already-open file-like object.
   * `parse_data(data: bytes) -> Generator[LogRecord]` parses data already in
     memory.
@@ -138,48 +138,51 @@ https://github.com/wandb/wandb/pull/8088
 Roadmap
 -------
 
-Basic functionality
+Features:
 
-* [x] Divide the file into blocks
-* [x] Divide each block into chunks
-* [x] Aggregate sequences of chunks into raw binary records
-* [x] Use wandb's protobuf schema to parse raw records into protobuf messages
-* [x] Use protobuf's json tools to convert messages into dictionaries
-* [x] Additional post-processing to streamline the dictionaries
+* [x] Parsing valid records:
+  * [x] Divide the file into blocks.
+  * [x] Divide each block into chunks.
+  * [x] Aggregate sequences of chunks into raw binary records.
+  * [x] Use wandb's protobuf schema to parse raw records into protobuf
+        messages.
+  * [x] Use protobuf's json tools to convert messages into dictionaries.
+  * [x] Additional post-processing to streamline the dictionaries.
+* [x] Basic error tracking and recovery:
+  * [x] Recover from corrupt chunks.
+  * [x] Recover from corrupt record sequences.
+  * [x] Recover from corrupt protobuf binary data.
+* [x] Support streaming (helpful if database is not already in memory).
+* [x] Support unbuffered file-like objects.
+* [x] Structured parsing/corruption:
+  * [x] Dedicated types for blocks, chunks, various kinds of records.
+  * [x] Track block/chunk/record context (numbers, indices, components).
+  * [x] Dedicated types for different kinds of corruption.
+  * [x] Track corrupt chunk/block/record context (indices, components).
+* [ ] Derive size and data rather than copying byte arrays at each layer.
+* [x] API improvements:
+  * [x] Option to use variant block boundaries.
+  * [x] Main functions filter corruption by default.
+  * [ ] Option to raise an exception upon seeing corruption.
+* [ ] Recover from corrupt protobuf record contents?
 
-Enhanced functionality
+Verification and testing:
 
-* [x] Support streaming (helpful if database is not already in memory)
-* [x] Robust to incomplete reads from unbuffered file-like objects
-* [x] Dedicated types for blocks, chunks, various kinds of records
-* [x] Tracking block/chunk/record context (numbers, indices, components)
-* [x] Dedicated types for different kinds of corruption
-* [x] Tracking of corrupt chunk/block/record context (indices, components)
-* [ ] Size and data properties for different types of data and corruption?
-* [x] API improvement: Option to use variant block boundaries
-* [x] API improvement: Main functions filter corruption by default
-* [ ] API improvement: Option to raise an exception upon seeing corruption
-
-Error tracking and recovery
-
-* [x] Recover from corrupt chunks
-* [x] Recover from corrupt record sequences
-* [x] Recover from corrupt protobuf binary data
-* [ ] Recover from corrupt protobuf record contents
-
-Verification and testing
-
-* [x] Type-check with `mypy`
-* [x] Test parsing on a large log without errors
-  * [x] Fix off-by-one error causing the problem
-* [x] Test error recovery on a large log with a mysterious padding error
+* [x] Type annotations and comprehensive type-checking with `mypy`.
+* [x] Test parsing on a large log without errors.
+  * [x] Fix off-by-one error causing the problem.
+* [x] Test error recovery on a large log with a mysterious padding error.
   * [x] Trace the cause to [a historical bug in wandb core](https://github.com/wandb/wandb/pull/8088)
-  * [x] Option to make the parser handle this particular variant
+* [ ] Automatic unit tests for the individual layer parsers.
+* [ ] Automatic integration tests for end-to-end parsers (Generate some
+      small (<1MB) logs with wandb SDK, including core and legacy backends,
+      including buggy version of core (0.17.5); compare output with wandb
+      SDK's readers).
 
-Documentation
+Documentation:
 
-* [x] Brief README
-* [ ] Document code
-* [ ] Document format
-* [ ] Document format variations
-* [ ] API reference
+* [x] Brief README.
+* [ ] Document the format.
+* [ ] Document the historic variations in the format.
+* [ ] Docstrings in the code.
+* [ ] Generate a (single-page?) API reference.

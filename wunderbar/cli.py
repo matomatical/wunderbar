@@ -71,13 +71,12 @@ def main() -> None:
                 if not args.peek:
                     print(f"Corruption: {type(c).__name__}")
                 else:
-                    print(f"Corruption: {type(c).__name__}: {c.note}")
-                # TODO: 
-                # if args.verbose:
-                #     bgrid = [c.data[i:i+16] for i in range(0, len(c.data), 16)]
-                #     for i in range(0, len(c.data), 16):
-                #         row = c.data[i:i+16]
-                #         print(f"{i:>8}:", *[f"{b:02x}" for b in row], sep="  ")
+                    print(f"Corruption: {type(c).__name__}: {c.note} ({c.size} B)")
+                if args.verbose:
+                    bgrid = [c.data[i:i+16] for i in range(0, len(c.data), 16)]
+                    for i in range(0, len(c.data), 16):
+                        row = c.data[i:i+16]
+                        print(f"{i:>8}:", *[f"{b:02x}" for b in row], sep="  ")
 
 
 if __name__ == "__main__":

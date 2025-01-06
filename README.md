@@ -138,7 +138,7 @@ https://github.com/wandb/wandb/pull/8088
 Roadmap
 -------
 
-Features:
+Planned features:
 
 * [x] Parsing valid records:
   * [x] Divide the file into blocks.
@@ -158,13 +158,20 @@ Features:
   * [x] Dedicated types for blocks, chunks, various kinds of records.
   * [x] Track block/chunk/record context (numbers, indices, components).
   * [x] Dedicated types for different kinds of corruption.
+        *Since 0.0.1.*
   * [x] Track corrupt chunk/block/record context (indices, components).
-* [ ] Derive size and data rather than copying byte arrays at each layer.
+        *Since 0.0.1.*
+* [x] Derive size and data rather than copying byte arrays at each layer.
 * [x] API improvements:
   * [x] Option to use variant block boundaries.
   * [x] Main functions filter corruption by default.
-  * [ ] Option to raise an exception upon seeing corruption.
+  * [x] Option to raise an exception upon seeing corruption.
+        *Since 0.0.2.*
+  * [x] Filter for each RecordType.
+        *Since 0.0.2.*
+<!--
 * [ ] Recover from corrupt protobuf record contents?
+-->
 
 Verification and testing:
 

@@ -34,17 +34,28 @@ class Chunk:
         MIDDLE  = 3
         LAST    = 4
     type: Type
-    data: bytes
     block: Block    # block within which this chunk was found
+    index: int      # index within block of data start (not incl. header)
+    size: int       # number of bytes
     number: int     # position in sequence of chunks within block
-    index: int      # data = block.data[index:index+len(data)]
+
+    @property
+    def data(self):
+        return self.block.data[self.index:self.index+self.size]
 
 
 @dataclasses.dataclass
 class RawRecord:
-    data: bytes
-    number: int     # position in sequence of valid records
+    number: int     # position in sequence of *valid* records
     chunks: tuple[Chunk, ...] # chunks from which this record was assembled
+    
+    @property
+    def data(self) -> bytes:
+        return b''.join(chunk.data for chunk in self.chunks)
+    
+    @property
+    def size(self) -> int:
+        return len(self.data)
 
 
 if not typing.TYPE_CHECKING:
@@ -74,8 +85,8 @@ RecordType = typing.Literal[
 
 @dataclasses.dataclass
 class LogRecord:
+    type: RecordType        # TODO: make this part of the type?
     number: int             # wandb sequence number (decided at write time)
-    type: RecordType
     data: dict
     control: dict | None
     info: dict | None
@@ -86,29 +97,73 @@ class LogRecord:
 class Corruption:
     note: str       # text justification of the error
 
+    @property
+    def data(self) -> bytes:
+        raise NotImplementedError()
+
+    @property
+    def size(self) -> int:
+        raise NotImplementedError()
+
 
 @dataclasses.dataclass
 class BadChunk(Corruption):
-    data: bytes
     block: Block    # block within which this chunk was found
-    index: int      # data = block.data[index:]
+    index: int
+    
+    @property
+    def data(self):
+        return self.block.data[self.index:]
+    
+    @property
+    def size(self) -> int:
+        return len(self.block.data) - self.index
 
 
 @dataclasses.dataclass
 class IncompleteChunkSequence(Corruption):
     chunks: tuple[Chunk, ...]
+    
+    @property
+    def data(self) -> bytes:
+        return b''.join(chunk.data for chunk in self.chunks)
+
+    @property
+    def size(self):
+        return len(self.data)
 
 
 @dataclasses.dataclass
-class RecordWithProtobufError(Corruption):
+class ProtobufRecordError(Corruption):
     raw_record: RawRecord
     protobuf_error: protobuf.message.DecodeError
+    
+    @property
+    def data(self) -> bytes:
+        return self.raw_record.data
+
+    @property
+    def size(self):
+        return self.raw_record.size
 
 
 class InvalidFileHeaderException(Exception):
     """
     Invalid file header.
     """
+
+
+class CorruptionEncountered(Exception):
+    """
+    Log contains something that caused a parse error. (These errors are not
+    raised by default, only raised if 'raise_for_corruption' flag is set on
+    a parser function that normally ignores corruption.)
+    """
+    def __init__(self, byte0: int):
+        super().__init__(f"Log contains corruption (first byte {byte0})")
+        self.byte0 = byte0
+
+
 
 
 # # # 
@@ -147,42 +202,96 @@ CRC_START = {
 def parse_file(
     file: typing.IO[bytes],
     exclude_header_from_first_block: bool = False,
+    raise_for_corruption: bool = False,
 ) -> collections.abc.Generator[LogRecord]:
-    yield from purify(parse_file_with_corruption(
-        file=file,
-        exclude_header_from_first_block=exclude_header_from_first_block,
-    ))
+    yield from purify(
+        parse_file_with_corruption(
+            file=file,
+            exclude_header_from_first_block=exclude_header_from_first_block,
+        ),
+        raise_for_corruption=raise_for_corruption,
+    )
 
 
 def parse_filepath(
     path: str | pathlib.Path,
     exclude_header_from_first_block: bool = False,
+    raise_for_corruption: bool = False,
 ) -> collections.abc.Generator[LogRecord]:
-    yield from purify(parse_filepath_with_corruption(
-        path=path,
-        exclude_header_from_first_block=exclude_header_from_first_block,
-    ))
+    yield from purify(
+        parse_filepath_with_corruption(
+            path=path,
+            exclude_header_from_first_block=exclude_header_from_first_block,
+        ),
+        raise_for_corruption=raise_for_corruption,
+    )
 
 
 def parse_data(
     data: bytes,
     exclude_header_from_first_block: bool = False,
+    raise_for_corruption: bool = False,
 ) -> collections.abc.Generator[LogRecord]:
-    yield from purify(parse_data_with_corruption(
-        data=data,
-        exclude_header_from_first_block=exclude_header_from_first_block,
-    ))
+    yield from purify(
+        parse_data_with_corruption(
+            data=data,
+            exclude_header_from_first_block=exclude_header_from_first_block,
+        ),
+        raise_for_corruption=raise_for_corruption,
+    )
+
+
+# # # 
+# STREAM FILTERS
 
 
 def purify(
-    g: collections.abc.Generator[LogRecord | Corruption],
+    generator: collections.abc.Generator[LogRecord | Corruption],
+    raise_for_corruption: bool = False,
 ) -> collections.abc.Generator[LogRecord]:
-    for log_or_corruption in g:
+    if not raise_for_corruption:
+        for log_or_corruption in generator:
+            match log_or_corruption:
+                case LogRecord() as log:
+                    yield log
+                # discard corruption
+    else:
+        for log_or_corruption in generator:
+            match log_or_corruption:
+                case LogRecord() as log:
+                    yield log
+                case BadChunk() as bad_chunk:
+                    byte0 = bad_chunk.block.index + bad_chunk.index
+                    raise CorruptionEncountered(byte0=byte0)
+                case IncompleteChunkSequence() as bad_chunks:
+                    chunk0 = bad_chunks.chunks[0]
+                    byte0 = chunk0.block.index + chunk0.index
+                    raise CorruptionEncountered(byte0=byte0)
+                case ProtobufRecordError() as bad_record:
+                    chunk0 = bad_record.raw_record.chunks[0]
+                    byte0 = chunk0.block.index + chunk0.index
+                    raise CorruptionEncountered(byte0=byte0)
+
+
+def filter_type(
+    generator: collections.abc.Generator[LogRecord | Corruption],
+    type: RecordType,
+) -> collections.abc.Generator[LogRecord]:
+    for log_or_corruption in generator:
         match log_or_corruption:
-            case LogRecord() as log:
+            case LogRecord(type=type_) as log if type == type_:
                 yield log
-            case Corruption():
-                pass # discard
+            # discard other types (and corruption)
+
+
+def filter_history(
+    generator: collections.abc.Generator[LogRecord | Corruption],
+) -> collections.abc.Generator[LogRecord]:
+    for log_or_corruption in generator:
+        match log_or_corruption:
+            case LogRecord(type="history") as log:
+                yield log
+            # discard other types (and corruption)
 
 
 # # # 
@@ -300,7 +409,6 @@ def parse_blocks_to_chunks(
             except ValueError:
                 yield BadChunk(
                     note=f"invalid type byte (want 0x01--0x04, got 0x{chunk_type:02x})",
-                    data=block.data[index:],
                     block=block,
                     index=index,
                 )
@@ -312,7 +420,6 @@ def parse_blocks_to_chunks(
                 yield BadChunk(
                     note=f"implausible length ({data_len} > {remainder_len} "
                         "bytes left in block)",
-                    data=block.data[index:],
                     block=block,
                     index=index,
                 )
@@ -328,7 +435,6 @@ def parse_blocks_to_chunks(
             if checksum != data_crc32:
                 yield BadChunk(
                     note="failed checksum (could be due to data or header)",
-                    data=block.data[index:],
                     block=block,
                     index=index,
                 )
@@ -337,10 +443,10 @@ def parse_blocks_to_chunks(
             # if we made it here, it's a valid chunk! advance within block!
             yield Chunk(
                 type=chunk_type,
-                data=data,
                 block=block,
+                index=index + HEADER_LEN,
+                size=data_len,
                 number=number,
-                index=index,
             )
             number += 1
             index += HEADER_LEN + data_len
@@ -350,7 +456,6 @@ def parse_blocks_to_chunks(
             if any(block.data[index:]):
                 yield BadChunk(
                     note="nonzero chunk padding at end of block",
-                    data=block.data[index:],
                     block=block,
                     index=index,
                 )
@@ -384,7 +489,6 @@ def parse_chunks_to_raw_records(
                     uninitialised_record_in_progress.clear()
                 # either way, this is a complete single-chunk record!
                 yield RawRecord(
-                    data=chunk.data,
                     number=number,
                     chunks=(chunk,),
                 )
@@ -421,7 +525,6 @@ def parse_chunks_to_raw_records(
                     # completion of a previously-started multi-part record!
                     record_in_progress.append(chunk)
                     yield RawRecord(
-                        data=b''.join(c.data for c in record_in_progress),
                         number=number,
                         chunks=tuple(record_in_progress),
                     )
@@ -476,11 +579,11 @@ def parse_raw_records_to_protobuf_records(
 ) -> collections.abc.Generator[ProtobufRecord | Corruption]:
     for raw_record_or_corruption in raw_records:
         match raw_record_or_corruption:
-            case RawRecord(data=data) as raw_record:
+            case RawRecord() as raw_record:
                 # deserialise with protobuf
                 pb_record = _ProtobufRecord()
                 try:
-                    pb_record.ParseFromString(data)
+                    pb_record.ParseFromString(raw_record.data)
                     yield ProtobufRecord(
                         record=pb_record,
                         raw_record=raw_record,
@@ -488,7 +591,7 @@ def parse_raw_records_to_protobuf_records(
 
                 # track protobuf deserialisation errors
                 except protobuf.message.DecodeError as decode_error:
-                    yield RecordWithProtobufError(
+                    yield ProtobufRecordError(
                         note="protobuf record failed deserialisation",
                         raw_record=raw_record,
                         protobuf_error=decode_error,

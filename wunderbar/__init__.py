@@ -16,6 +16,8 @@ from wunderbar.parsers import (
     parse_filepath,
     parse_data,
     purify,
+    filter_type,
+    filter_history,
     parse_file_with_corruption,
     parse_filepath_with_corruption,
     parse_data_with_corruption,

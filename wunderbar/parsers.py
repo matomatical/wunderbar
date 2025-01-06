@@ -164,8 +164,6 @@ class CorruptionEncountered(Exception):
         self.byte0 = byte0
 
 
-
-
 # # # 
 # FILE FORMAT AND CHECKSUM VALIDATION MAGIC
 

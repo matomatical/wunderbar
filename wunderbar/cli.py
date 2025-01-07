@@ -71,12 +71,23 @@ def main() -> None:
                 if not args.peek:
                     print(f"Corruption: {type(c).__name__}")
                 else:
-                    print(f"Corruption: {type(c).__name__}: {c.note} ({c.size} B)")
+                    type_name = type(c).__name__
+                    size_str = _size_fmt(c.size)
+                    print(f"Corruption: {type_name}: {c.note} ({size_str})")
                 if args.verbose:
                     bgrid = [c.data[i:i+16] for i in range(0, len(c.data), 16)]
                     for i in range(0, len(c.data), 16):
                         row = c.data[i:i+16]
                         print(f"{i:>8}:", *[f"{b:02x}" for b in row], sep="  ")
+
+
+def _size_fmt(num):
+    # https://stackoverflow.com/a/1094933
+    for unit in ("", "Ki", "Mi", "Gi"):
+        if abs(num) < 1024.0:
+            return f"{num:3.1f} {unit}B"
+        num /= 1024.0
+    return f"{num:.1f} TiB"
 
 
 if __name__ == "__main__":

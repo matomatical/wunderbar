@@ -284,11 +284,11 @@ def filter_type(
 
 def filter_history(
     generator: collections.abc.Generator[LogRecord | Corruption],
-) -> collections.abc.Generator[LogRecord]:
-    for log_or_corruption in generator:
-        match log_or_corruption:
-            case LogRecord(type="history") as log:
-                yield log
+) -> collections.abc.Generator[LogRecord]: # specifically history LogRecords
+    for record_or_corruption in generator:
+        match record_or_corruption:
+            case LogRecord(type="history") as history_record:
+                yield history_record
             # discard other types (and corruption)
 
 

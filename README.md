@@ -16,6 +16,7 @@ Robust Python parser for W&B's `.wandb` binary structured log format.
    management. Should be easy to understand and build from if you need more
    features, or to port to other languages if you need more speed.
 
+
 Quick start
 -----------
 
@@ -89,26 +90,59 @@ See code for full details.
 
 TODO: document code.
 
-About the .wandb file format
-----------------------------
+About the .wandb file format and the W&B SDK
+--------------------------------------------
 
-The `.wandb` files included with every wandb run folder store experiment
-configuration information and metrics in a custom binary 'structured log'
-format. In brief, each fact, file, system statistic, experiment metric or other
-thing logged by W&B is encoded via protobuf and then the data from each logging
-event is appended to the binary file in a format akin to the log files from
-LevelDB (actually the same as the LevelDB log format, except for the choice of
-checksum algorithm, for some reason W&B wanted to use the older CRC32 instead
-of LevelDB's CRC32C).
+The `.wandb` files that this library is designed to parse are included with
+every wandb run folder store experiment configuration information and metrics
+in a custom binary 'structured log' format.
 
-In more detail:
+In brief, each fact, file, system statistic, experiment metric or other thing
+logged by W&B is encoded via protobuf and then the data from each logging event
+is appended to the binary file in a format akin to the log files from LevelDB.
 
-* ... TODO
+In slightly more detail, the log format has two conceptual layers:
 
-Relation to wandb SDK
----------------------
+1. **W&B LevelDB-like log format**
+  At a low level, the log is structured using a robust storage format that is a
+  variant of the
+    [LevelDB log format](https://github.com/google/leveldb/blob/main/doc/log_format.md).
+  This means the file is a sequence of 32 KiB 'blocks', and each block contains
+  a sequence of 'chunks' containing individual log items together with a 7-byte
+  header storing their size and a checksum.
 
-The wandb SDK / source code includes the following related code.
+  Actually, if a log item would straddle a block boundary, it's broken up into
+  a sequence of partial chunks, so that each block always starts with the start
+  of a chunk. This system allows safely recovering from the next block boundary
+  in the event of encountering corrupt data while reading (the Python reader in
+  the W&B codebase doesn't support this kind of error recovery, but the newer
+  W&B core Golang reader does).
+
+  This is essentially the description of the LevelDB log format itself, but in
+  W&B's case, there are some small differences from the LevelDB log format,
+  namely the choice of checksum algorithm and the inclusion of an additional
+  7-byte file header at the beginning of the first block.
+
+2. **W&B Protobuf record format**
+  The contents of the log items are in this case binary records serialised with
+    [protobuf](https://en.wikipedia.org/wiki/Protocol_Buffers)
+  using
+    [this schema](https://github.com/wandb/wandb/blob/main/wandb/proto/wandb_internal.proto).
+
+  The schema includes different record types for various notable aspects of a
+  running experiment, including most of the stuff stored in other files in the
+  run folder (config, metadata, any strings written to stderr/stdout), samples
+  of system statistics, environment telemetry (thanks!), and, of course, all
+  data logged explicitly with `wandb.log`.
+
+  In the latter case, each dictionary logged is stored as a list of key/value
+  pairs with the keys encoded as strings and the values encoded as JSON
+  strings. This means that if you were to actually inspect the bytes of the
+  `.wandb` file, you'd see your metrics in plain text, interspersed with binary
+  separators from protobuf (and occasionally interrupted by a LevelDB header if
+  the record straddles a block boundary).
+
+The W&B SDK includes the following code related to this format.
 
 1. The protobuf schema used for encoding log items
     (https://github.com/wandb/wandb/blob/main/wandb/proto/wandb_internal.proto).
@@ -124,16 +158,56 @@ The wandb SDK / source code includes the following related code.
    Note that the Python backend reader does not support recovering data from
    partially-corrupted (or partially-improperly-written) .wandb files.
 
-This script is a Python replacement for (3) that draws on (1) but with an
-independent implementation of a decoder for the LevelDB log format that is
-more resilient to errors, and produces pure-Python output objects.
+This library is a Python replacement for (3) that draws on (1) but with an
+independent implementation of a decoder for the LevelDB log format that is more
+resilient to errors, and produces pure-Python output objects.
 
-Changes in the wandb SDK
-------------------------
 
-TODO: Describe the issue in wandb-core from before wandb 0.17.6.
+Response to a historical bug in the W&B core `.wandb` log writer
+--------------------------------------------------------------
 
-https://github.com/wandb/wandb/pull/8088
+Another feature of this library is that it is resilient to
+  a historical bug
+in the W&B core backend prior to wandb version 0.17.6.
+Prior to [this fix](https://github.com/wandb/wandb/pull/8088), the new Golang
+`.wandb` *writer* failed to account for the 7-byte file header in computing the
+32KiB block boundaries. As a result, when faced with writing data that would
+straddle a block boundary, the writer would make the following decisions:
+
+1. With 7 or more bytes remaining before the next 32KiB block boundary, the
+   broken writer would split the record into multiple parts, as expected, but
+   the first part would be sized so as to end 7 bytes into the next 32KiB
+   block.
+2. With 7 or fewer bytes remaining before the next 32KiB block boundary, the
+   broken writer would write a small record with a 7 byte header and a small
+   amount of data within the first 7 bytes of the next block, when the expected
+   behaviour would be to pad to the block boundary with zeros.
+3. When fewer than 7 bytes past the start of a new block, the broken writer
+   would pad to the 7 byte mark with zeros, when the expected behaviour would
+   be to write the next chunk immediately.
+
+The W&B SDK's reader actually doesn't check whether chunk lengths fit inside
+the current block, so if (1) were the only issue, then the W&B library would be
+able to read these logs without any issue. However, issues (2) and (3) cause
+problems for the standard readers, and any logs that happen to display these
+symptoms of the bug would be unreadable to them. The standard error recovery
+protocol is also invalidated by (1) and (2) as in most cases the attempt to
+resume reading from a next block will fail due to the presence of the last 7
+bytes of a chunk at the beginning of a block boundary where a chunk header is
+expected. As a result, it is impossible to extract the data in these `.wandb`
+logs with the W&B SDK.
+
+The parse methods in this library include an optional Boolean flag,
+  `exclude_header_from_first_block`,
+which, if set to `True`, will correctly parse logs generated with this broken
+writer by anticipating its mistakes.
+
+You might be able to tell if your logs were written by this broken writer (and
+therefore whether to parse them with this flag) by checking the version of the
+SDK and the backend used to generate them. However, if you don't have easy
+access to this information, you can just try parsing the file once with the
+flag and once without, and see which option recovers more data.
+
 
 Roadmap
 -------

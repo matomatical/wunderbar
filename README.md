@@ -186,6 +186,15 @@ Verification and testing:
       including buggy version of core (0.17.5); compare output with wandb
       SDK's readers).
 
+Performance:
+
+* [ ] Speed up with Rust extension (check out [pyo3](https://pyo3.rs/)).
+* [ ] Performance benchmarking:
+  * [ ] wunderbar Python parsers.
+  * [ ] wandb-legacy Python parsers.
+  * [ ] wandb-core Golang parsers.
+  * [ ] wunderbar Rust parsers.
+
 Documentation:
 
 * [x] Brief README.

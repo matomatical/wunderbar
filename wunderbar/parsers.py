@@ -275,10 +275,10 @@ def filter_type(
     generator: collections.abc.Generator[LogRecord | Corruption],
     type: RecordType,
 ) -> collections.abc.Generator[LogRecord]:
-    for log_or_corruption in generator:
-        match log_or_corruption:
-            case LogRecord(type=type_) as log if type == type_:
-                yield log
+    for record_or_corruption in generator:
+        match record_or_corruption:
+            case LogRecord(type=type_) as record if type == type_:
+                yield record
             # discard other types (and corruption)
 
 
@@ -290,6 +290,30 @@ def filter_history(
             case LogRecord(type="history") as history_record:
                 yield history_record
             # discard other types (and corruption)
+
+
+def first_type(
+    generator: collections.abc.Generator[LogRecord | Corruption],
+    type: RecordType,
+) -> LogRecord | None:
+    for record_or_corruption in generator:
+        match record_or_corruption:
+            case LogRecord(type=type_) as record if type == type_:
+                return record
+            # skip other types (and corruption)
+    return None
+
+
+def first_run(
+    generator: collections.abc.Generator[LogRecord | Corruption],
+) -> LogRecord | None: # specifically a run record
+    for record_or_corruption in generator:
+        match record_or_corruption:
+            case LogRecord(type="run") as run_record:
+                return run_record
+            # skip other types (and corruption)
+    # TODO: will it always be record number 2? check this!?
+    return None
 
 
 # # # 
@@ -619,19 +643,7 @@ def parse_protobuf_records_to_log_records(
                     assert False, "invalid wandb record, missing type"
 
                 # streamline key/value_json item lists (replace with dicts)
-                for field in ("item", "update", "remove",):
-                    if field in record[record_type]:
-                        mapping = {}
-                        for item in record[record_type][field]:
-                            if 'key' in item:
-                                key = item['key']
-                            else: # 'nested_key' in item:
-                                key = '/'.join(item['nested_key'])
-                            # TODO: handle as corruption?
-                            assert key not in mapping, "duplicate item"
-                            value = json.loads(item['value_json'])
-                            mapping[key] = value
-                        record[record_type][field] = mapping
+                streamline_internal_mappings(record_type, record)
 
                 # assemble
                 yield LogRecord(
@@ -646,3 +658,49 @@ def parse_protobuf_records_to_log_records(
             # pass up corruption
             case Corruption() as corruption:
                 yield corruption
+
+    
+PROTOBUF_DICT_PATHS = {
+    ("history", "item",),
+    ("summary", "update",),
+    ("summary", "remove",),
+    ("config", "update",),
+    ("config", "remove",),
+    ("stats", "item",),
+    ("run", "config", "update",),
+    ("run", "config", "remove",),
+    ("run", "summary", "update",),
+    ("run", "summary", "remove",),
+}
+
+
+def streamline_internal_mappings(
+    record_type: RecordType,
+    record: dict,
+) -> None: 
+    for path in PROTOBUF_DICT_PATHS:
+        # see if that path exists is in this record
+        d_outer = record
+        d_inner = record
+        broken = False
+        for field in path:
+            if field in d_inner:
+                d_outer = d_inner
+                d_inner = d_inner[field]
+            else:
+                broken = True
+                break
+        if broken:
+            continue
+        # if so, d_inner is now a protobuf-style mapping list, transform it!
+        mapping = {}
+        for key_val in d_inner:
+            if 'key' in key_val:
+                key = key_val['key']
+            else: # 'nested_key' in key_val:
+                key = '/'.join(key_val['nested_key'])
+            assert key not in mapping, "duplicate key_val" # TODO: corruption?
+            value = json.loads(key_val['value_json'])
+            mapping[key] = value
+        # then mutate d_outer to have this mapping instead of the list d_inner
+        d_outer[field] = mapping

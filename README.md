@@ -148,6 +148,7 @@ Planned features:
         messages.
   * [x] Use protobuf's json tools to convert messages into dictionaries.
   * [x] Additional post-processing to streamline the dictionaries.
+    * [x] Extend to nested fields e.g. inside `run` record. *Since 0.0.3.*
 * [x] Basic error tracking and recovery:
   * [x] Recover from corrupt chunks.
   * [x] Recover from corrupt record sequences.
@@ -169,6 +170,8 @@ Planned features:
         *Since 0.0.2.*
   * [x] Filter for each RecordType.
         *Since 0.0.2.*
+  * [x] Filter for the first record of each type, particularly the run record.
+        *Since 0.0.3.*
 <!--
 * [ ] Recover from corrupt protobuf record contents?
 -->

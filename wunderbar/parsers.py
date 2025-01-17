@@ -1,3 +1,7 @@
+"""
+wunderbar types and parsers.
+"""
+
 import collections
 import dataclasses
 import enum
@@ -19,33 +23,129 @@ import wandb.proto.wandb_internal_pb2 as wandb_protobuf
 # TYPES
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class Block:
+    """
+    A 32KiB block, from the lowest layer of the W&B LevelDB log-like log
+    format.
+
+    Fields:
+
+    * data: bytes
+        The data comprising the block.
+    * size: int
+        Length of the block. Always <= 32KiB. Mostly equal to 32 KiB, but the
+        first one will be at least 7 bytes shorter (unless the option is
+        enabled to exclude the file header from the first block) and the last
+        one may be as short as 1 byte (or 8 bytes assuming no corruption).
+    * number: int
+        Position in sequence of blocks within file, starting from 0 for the
+        first block in the file.
+    * index: int
+        Position of the first byte in the sequence of bytes within the file.
+        Defined such that `data = file[index:index+len(data)]`. Usually this
+        will be `index = 32 * 1024 * number`, but the first block will start
+        after the 7-byte header and if the option is enabled to exclude the
+        header from the first block then all subsequent blocks will start 7
+        bytes later as well.
+    """
     data: bytes
-    number: int # position in sequence of blocks within file
-    index: int  # data = file[file_index:file_index+len(data)]
+    number: int
+    index: int
+    
+    @property
+    def size(self):
+        return len(self.data)
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class Chunk:
+    """
+    A chunk of data within a Block, which has a 7-byte header followed by some
+    data, and could represent an entire record or part of a record.
+
+    Fields:
+
+    * type: Chunk.Type
+        The chunk type (FULL for a chunk containing a whole record, FIRST for
+        the first chunk of a multi-chunk record, MIDDLE for intermediate chunks
+        of a multi-chunk record, and LAST for the final chunk of a multi-chunk
+        record).
+    * block: Block
+        Block within which this chunk was found.
+    * index: int
+        Index of the start of the data segment within this block's bytes. Note
+        that the 7-byte chunk header is technically the first byte of the
+        chunk, but that starts 7 bytes earlier.
+    * data: bytes
+        The contents of the data segment of this chunk.
+    * size: int
+        Number of bytes in the data segment of this chunk.
+    * number: int
+        Position in sequence of chunks within block, starting from 0 for the
+        first chunk in the block. 
+
+    Notes:
+
+    * The `data` field is a property that is derived from the bytes array of
+      the underlying block and the chunk's `size` and `index` fields. No copy is
+      made until this field is accessed.
+    """
     class Type(enum.IntEnum):
+        """
+        Enumeration representing the various chunk types.
+
+        Elements:
+
+        1. FULL: for a chunk containing a whole record.
+        2. FIRST: for the first chunk of a multi-chunk record.
+        3. MIDDLE: for intermediate chunks in a multi-chunk record.
+        4. LAST: for the final chunk of a multi-chunk record.
+        """
         FULL    = 1
         FIRST   = 2
         MIDDLE  = 3
         LAST    = 4
     type: Type
-    block: Block    # block within which this chunk was found
-    index: int      # index within block of data start (not incl. header)
-    size: int       # number of bytes
-    number: int     # position in sequence of chunks within block
+    block: Block
+    index: int
+    size: int
+    number: int
 
     @property
     def data(self):
         return self.block.data[self.index:self.index+self.size]
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class RawRecord:
+    """
+    A binary record assembled from the data of one or more Chunks.
+    
+    Fields:
+
+    * number: int
+        Position in sequence of *valid* records within the file, starting from
+        0 for the first raw record. Note that this may not be in sync with the
+        numbering of records as written, as in the case of corruption it is
+        impossible to tell how many records have been lost.
+    * chunks: tuple[Chunk, ...]
+        A sequence of one or more chunks from which this binary record was
+        assembled. If the sequence has length 1, then the singleton chunk
+        should have type FULL. Else, the first chunk should have type FIRST,
+        the last should have type LAST, and any in-between chunks should have
+        type MIDDLE.
+    * data: bytes
+        The binary contents of the raw record.
+    * size: int
+        The number of bytes in the raw record.
+
+    Notes:
+
+    * The `data` and `size` fields are properties derived from the underlying
+      chunks. In the case of `data`, no data is copied until this field is
+      accessed.
+    """
     number: int     # position in sequence of *valid* records
     chunks: tuple[Chunk, ...] # chunks from which this record was assembled
     
@@ -55,47 +155,129 @@ class RawRecord:
     
     @property
     def size(self) -> int:
-        return len(self.data)
+        return sum(chunk.size for chunk in self.chunks)
 
 
-if not typing.TYPE_CHECKING:
-    # At runtime, we use the generated class
-    _ProtobufRecord = wandb_protobuf.Record
-else:
-    # At type-check time, use this stub. Needed since W&B doesn't include the
-    # mypy stubs in SDK distributed with pip (though they are in the source)
-    # https://github.com/wandb/wandb/blob/main/wandb/proto/v5/wandb_internal_pb2.pyi)
+if typing.TYPE_CHECKING:
+    # Unfortunately, W&B doesn't include their internal mypy stubs with their
+    # SDK as distributed through PyPI, though they are in the source
+    # (https://github.com/wandb/wandb/blob/main/wandb/proto/v5/wandb_internal_pb2.pyi)
+    # Therefore, at type-check time, use this stub:
     class _ProtobufRecord(protobuf.message.Message):
         """Stub for wandb.proto.v5.wandb_internal_pb2.Record."""
+else:
+    # At runtime, we can freely use the following generated class.
+    _ProtobufRecord = wandb_protobuf.Record
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class ProtobufRecord:
+    """
+    Wrapper for a parsed record that also has a pointer to the original raw
+    record (and in turn, the chunks from which it was assembled and their
+    locations in blocks and the file).
+
+    Fields:
+
+    * record: _ProtobufRecord
+        The parsed protobuf message.
+    * raw_record: RawRecord
+        The binary record from which it was parsed.
+    """
     record: _ProtobufRecord
     raw_record: RawRecord
 
 
+# Valid records come in a variety of types according to the W&B protobuf
+# schema.
 RecordType = typing.Literal[
-    "history", "summary", "output", "config", "files", "stats", "artifact",
-    "tbrecord", "alert", "telemetry", "metric", "output_raw", "run", "exit",
-    "final", "header", "footer", "preempting", "noop_link_artifact",
-    "use_artifact", "request",
+    "history",
+    "summary",
+    "output",
+    "config",
+    "files",
+    "stats",
+    "artifact",
+    "tbrecord",
+    "alert",
+    "telemetry",
+    "metric",
+    "output_raw",
+    "run",
+    "exit",
+    "final",
+    "header",
+    "footer",
+    "preempting",
+    # deprecated:
+    "noop_link_artifact",
+    "use_artifact",
+    "request",
 ]
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=False)
 class LogRecord:
-    type: RecordType        # TODO: make this part of the type?
-    number: int             # wandb sequence number (decided at write time)
+    """
+    A fully parsed and Python-converted .wandb log record.
+
+    Fields:
+    
+    * type: RecordType
+        One of the literal strings "history", "summary", "output", "config",
+        "files", "stats", "artifact", "tbrecord", "alert", "telemetry",
+        "metric", "output_raw", "run", "exit", "final", "header", "footer", or
+        "preempting", plus some other disused ones. This type field determines
+        the contents of the record's data dictionary.
+    * number: int
+        W&B sequence number. This is given to the record at write time. It may
+        not match the raw record's number if some records were lost due to data
+        corruption.
+    * data: dict
+        A (possibly nested) dictionary with the contents of the wandb protobuf
+        message. See the W&B protobuf schema or examples for information on its
+        contents, however, for convenience, all instances of lists of key/value
+        pairs in the protobuf format have been converted to Python
+        dictionaries.
+    * control: dict | None
+        Some auxiliary information that is sometimes present. I haven't found a
+        use for it.
+    * info: dict | None
+        Some auxiliary information that is sometimes present. I haven't found a
+        use for it.
+    * raw_record: RawRecord
+        The raw (binary) record from which this content was parsed. Contains
+        pointers to the chunks and in turn their blocks from which the data of
+        this record was assembled. Can therefore be used to figure out where in
+        the log file this record came from.
+    """
+    type: RecordType
+    number: int
     data: dict
     control: dict | None
     info: dict | None
     raw_record: RawRecord
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class Corruption:
-    note: str       # text justification of the error
+    """
+    Abstract base class for various kinds of corrupt data encountered while
+    parsing.
+    
+    Fields:
+
+    * note: str
+        A brief textual justification of the error.
+    * data: bytes
+        A sequence of bytes that could not be parsed due to the error. The
+        exact meaning depends on the subclass.
+    * size: int
+        Generally this is just the length of data.
+
+    Specific subclasses may have additional type-specific fields.
+    """
+    note: str
 
     @property
     def data(self) -> bytes:
@@ -106,9 +288,52 @@ class Corruption:
         raise NotImplementedError()
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class BadChunk(Corruption):
-    block: Block    # block within which this chunk was found
+    """
+    A problem was encountered while parsing a block for chunks. The error
+    recovery protocol says to resume reading from the start of the next 32KiB
+    block, so this 'BadChunk' reports the reason for the failure and tracks the
+    remaining data from the current block.
+
+    Fields:
+
+    * note: str
+        A brief textual justification of the error.
+    * data: bytes
+        The remaining bytes in the current block.
+    * size: int
+        The number of bytes from the start of the corruption to the end of the
+        current block.
+    * block: Block
+        The block within which an error was encountered.
+    * index: int
+        The index in the block at which the error was encountered. If the error
+        was encountered while reading a header, this index is from the start of
+        that header.
+    
+    Currently the possible errors are as follows:
+
+    * Invalid type byte in chunk header: If the byte that is supposed to
+      represent the chunk's type is not 1, 2, 3, or 4.
+    * Invalid chunk length in chunk header: If the short that is supposed to
+      represent the chunk's length suggests that the chunk would end outside of
+      the current block.
+    * Failed checksum: If the 4-byte checksum in the header doesn't match the
+      checksum computed from the contents of the chunk. Note that the problem
+      could be due to corrupt data, but could also be due to a corrupt checksum
+      in the header or even a corrupt length or chunk type (the length affects
+      the data used in computing the checksum and the chunk type seeds the
+      checksum computation).
+    * Nonzero chunk padding: If a chunk ends within 6 bytes of a block
+      boundary, the writer is supposed to issue zero bytes to the boundary.
+      This reader will usually skip the padding, but if it is nonzero it will
+      issue a bad chunk. Note that error recovery protocol just says to resume
+      reading from the start of the next block anyway, but it seems like a good
+      idea to report this in case it's useful information for a problem
+      encountered later.
+    """
+    block: Block
     index: int
     
     @property
@@ -120,8 +345,44 @@ class BadChunk(Corruption):
         return len(self.block.data) - self.index
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class IncompleteChunkSequence(Corruption):
+    """
+    A problem was encountered while assembling a multi-chunk record from a
+    sequence of chunks. In this case, the error-recovery protocol says to
+    resume trying to assemble a record from the next FIRST or FULL chunk.
+
+    Fields:
+
+    * note: str
+        A brief textual justification of the error.
+    * data: bytes
+        The bytes of the chunks of the partially-assembled multi-chunk record.
+    * size: int
+        The number of bytes across the chunks.
+    * chunks: tuple[Chunk, ...]
+        The chunks that were assembled before the issue was encountered.
+
+    Currently the possible errors are as follows:
+
+    * Interrupted sequence: Once you start assembling a record from a FIRST
+      chunk, you only expect to see zero or more MIDDLE chunks and then a LAST
+      chunk. If you see anything outside of this pattern (e.g. a BadChunk, a
+      FIRST chunk, or a FULL chunk) then the sequence has been interrupted.
+      We throw out the FIRST and any MIDDLE chunks accumulated so far as an
+      IncompleteChunkSequence.
+    * Uninitiated sequence: When you finish a chunk sequence and want to start
+      a new one, you only expect to see FIRST or FULL chunks. If you see
+      a MIDDLE or LAST chunk at that point, you don't have anything to append
+      it to, the sequence is uninitialised. In the case of a MIDDLE chunk we
+      continue accumulating MIDDLE chunks until there is a LAST chunk, and then
+      we throw this out as an IncompleteChunkSequence.
+    * Interrupted uninitiated sequence: In the process of accumulating MIDDLE
+      chunks as part of an uninitiated sequence, you expect to eventually see a
+      LAST chunk, but you might first see a FIRST or FULL chunk or a BadChunk.
+      In that case you have an interrupted uninitiated sequence, we throw out
+      the one or more MIDDLE chunks as an IncompleteChunkSequence.
+    """
     chunks: tuple[Chunk, ...]
     
     @property
@@ -130,11 +391,29 @@ class IncompleteChunkSequence(Corruption):
 
     @property
     def size(self):
-        return len(self.data)
+        return sum(chunk.size for chunk in self.chunks)
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class ProtobufRecordError(Corruption):
+    """
+    If the data itself was corrupt but nevertheless made it through the
+    checksum, protobuf might fail to decode the binary raw record. In that case
+    we capture the decode error and the raw record here.
+    
+    Fields:
+
+    * note: str
+        A brief textual justification of the error.
+    * data: bytes
+        The binary contents of the raw record.
+    * size: int
+        The number of bytes in the raw record.
+    * raw_record: RawRecord
+        The raw record that failed deserialisation.
+    * protobuf_error: protobuf.message.DecodeError
+        The exception thrown by protobuf.
+    """
     raw_record: RawRecord
     protobuf_error: protobuf.message.DecodeError
     
@@ -155,9 +434,13 @@ class InvalidFileHeaderException(Exception):
 
 class CorruptionEncountered(Exception):
     """
-    Log contains something that caused a parse error. (These errors are not
-    raised by default, only raised if 'raise_for_corruption' flag is set on
-    a parser function that normally ignores corruption.)
+    Log contains something that caused a parse error.
+
+    Note:
+
+    * These errors are not raised by default, they are only raised if
+      `raise_for_corruption` flag is set on a parser function that normally
+      ignores corruption.
     """
     def __init__(self, byte0: int):
         super().__init__(f"Log contains corruption (first byte {byte0})")

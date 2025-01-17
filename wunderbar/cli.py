@@ -1,3 +1,19 @@
+"""
+usage: wunderbar [-h] [-p] [-V] [-P] [-H] path
+
+Robust .wandb log parser.
+
+positional arguments:
+  path                  Filepath of .wandb file to parse.
+
+options:
+  -h, --help            show this help message and exit
+  -p, --peek            Print a one-line preview of each record.
+  -V, --verbose         Print each record in its entirety.
+  -P, --purify          Skip corruption.
+  -H, --exclude-header-from-first-block
+                        Parse .wandb log generated with variant format.
+"""
 import argparse
 import json
 import wunderbar
@@ -81,13 +97,16 @@ def main() -> None:
                         print(f"{i:>8}:", *[f"{b:02x}" for b in row], sep="  ")
 
 
-def _size_fmt(num):
-    # https://stackoverflow.com/a/1094933
+def _size_fmt(num: int | float) -> str:
+    """
+    Format size with a human-readable suffix.
+    Adapted from https://stackoverflow.com/a/1094933.
+    """
     for unit in ("", "Ki", "Mi", "Gi"):
         if abs(num) < 1024.0:
             return f"{num:3.1f} {unit}B"
         num /= 1024.0
-    return f"{num:.1f} TiB"
+    return f"{num:3.1f} TiB"
 
 
 if __name__ == "__main__":
